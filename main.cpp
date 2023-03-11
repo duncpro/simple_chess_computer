@@ -35,14 +35,30 @@ constexpr piece_color operator!(piece_color original) { return static_cast<piece
 using bitboard = std::uint64_t;
 
 /**
- * Converts a rank-file coordinate to a square index, which is the location of the bit corresponding to that coordinate
- * within a bitboard.  \n\n
+ * A bitlane represents 8 consecutive bits of a bitboard.\n\n
+ * On a <b>standard bitboard</b>, a bitlane typically describes the occupancy of a rank. The <nobr>(<i>n</i> + 1)th</nobr>
+ * least significant bit corresponds to the <nobr>(<i>n</i> + 1)th</nobr> queenside-most square of a rank. \n\n
+ * On a <b>rotated bitboard</b>, a bitlane typically describes the occupancy of a file.
+ */
+using bitlane = std::uint8_t;
+
+/**
+ * Creates a singleton bitlane. That is, a bitlane where only a single square is marked.
+ * In the context of <b>standard bitboards</b> this returns a bitlane with the <nobr>(<i>n</i> + 1)th</nobr>
+ * queenside-most square is marked.
+ */
+constexpr bitlane sbitlane(std::uint8_t n) {
+    return ((bitlane) 1) << n;
+}
+
+/**
+ * Converts a rank-file coordinate the index of the bit corresponding to that coordinate within a bitboard.  \n\n
  * Ranks are indexed [0, 7] beginning with the white edge of the board. \n\n
  * Files are indexed [0, 7] beginning with the queenside edge of the board.\n\n
  *
  * This function is intended for use during move pre-generation, where it is natural to think in terms of files and
- * ranks, and not necessarily square indices. Conversely, this function, and rank-file coordinates in general,
- * should not be used at runtime, in an effort to reduce unnecessary repetitive computation during game-tree construction.
+ * ranks, and not necessarily square indices. This function, and rank-file coordinates in general, may not be used at
+ * runtime, in an effort reduce unnecessary repetitive computation during game-tree construction.
  */
 consteval uint8_t coords_to_sindex(std::uint8_t rank, std::uint8_t file) { return rank * 8 + file; }
 
@@ -61,92 +77,10 @@ void print_bitboard(const bitboard board) {
     }
 }
 
-// Knights
-
-consteval std::array<bitboard, 64> generate_knight_move_table() {
-    std::array<bitboard, 64> table {};
-
-    for (std::uint8_t knight_file = 0; knight_file < 8; ++knight_file) {
-        for (std::uint8_t knight_rank = 0; knight_rank < 8; ++knight_rank) {
-            bitboard moves = 0;
-
-            // The following comments refer to knight moves using the format "towards x-y" where
-            // x = the direction which the knight moves two spaces.
-            // y = the direction which the knight moves one space.
-            // x, y are both in [black, kingside, white, queenside], the set of chess board cardinal directions.
-            // Also, recall that the rank approaches the black-side border as it increases.
-            // And the file approaches the kingside of the board as it increases.
-            // The origin is (rank = 0, file = 0) and it refers to the furthest white queenside space.
-
-            // There exists a towards black-queenside knight move.
-            if (knight_file > 0 && knight_rank < 6)
-                moves |= sbitboard(coords_to_sindex(knight_rank + 2, knight_file - 1));
-
-            // There exists a towards black-kingside knight move.
-            if (knight_file < 7 && knight_rank < 6)
-                moves |= sbitboard(coords_to_sindex(knight_rank + 2, knight_file + 1));
-
-            // There exists a towards queenside-black knight move.
-            if (knight_file < 6 && knight_rank < 7)
-                moves |= sbitboard(coords_to_sindex(knight_rank + 1, knight_file + 2));
-
-            // There exists a towards kingside-black knight move.
-            if (knight_file > 1 && knight_rank < 7)
-                moves |= sbitboard(coords_to_sindex(knight_rank + 1, knight_file - 2));
-
-            // There exists a towards white-queenside knight move.
-            if (knight_file > 0 && knight_rank > 1)
-                moves |= sbitboard(coords_to_sindex(knight_rank - 2, knight_file - 1));
-
-            // There exists a towards white-kingside knight move.
-            if (knight_file < 7 && knight_rank > 1)
-                moves |= sbitboard(coords_to_sindex(knight_rank - 2, knight_file + 1));
-
-            // There exists a towards queenside-white knight move.
-            if (knight_file > 1 && knight_rank > 0)
-                moves |= sbitboard(coords_to_sindex(knight_rank - 1, knight_file - 2));
-
-            // There exists a towards kingside-white knight move.
-            if (knight_file < 6 && knight_rank > 0)
-                moves |= sbitboard(coords_to_sindex(knight_rank - 1, knight_file + 2));
-
-            table[coords_to_sindex(knight_rank, knight_file)] = moves;
-        }
-    }
-    return table;
-}
-
-constinit std::array<bitboard, 64> knight_move_table = generate_knight_move_table();
-
-// Rotated bitboards are for sliding pieces like the rook.
-// They allow easy grouping of filewise blockers in the same way that rankwise blockers can be easily grouped.
-
-
-// Pawns
-
-//using symmetric4_slider_lookup_table = std::array<std::array<bitboard, 4096 /* 2^(12) */>, 16>;
-
-
-class symmetric4_slider_lookup_table {
-    private:
-        std::array<std::array<bitboard, 4096 /* 2^(12) */>, 16> data;
-
-    public:
-        bitboard lookup(uint8_t origin_square_index, uint16_t occupancy) {
-
-        }
-
-        consteval symmetric4_slider_lookup_table() {}
-};
-
 enum piece_type: uint8_t { rook = 0, knight = 1, bishop = 2, queen = 3, king = 4, pawn = 5, none = 6 };
 
 /**
- * <h2>Space-Efficient Chess Move Representation</h2>
- * <p>This data structure is intended for use in circumstances where compactness is preferred, even
- * to the detriment of execution speed. For instance, when storing the principle variation for
- * a position within a lookup table.</p>
- *
+ * <h2>Space-Efficient, Forward, Chess Move Representation</h2>
  * <h3>Origin & Destination Squares</h3>
  * <p>There are 64 squares on a chess board, which means for every move there are 64 possible
  * origin squares, and 63 possible destination squares. log2(64) = 6, therefore 6 bits are sufficient for
@@ -239,9 +173,6 @@ struct chess_position {
      */
     std::array<bitboard, 7> type_specific_bitboard;
 
-    std::array<bitboard, 2> occupied_by_color_rotated;
-    std::array<bitboard, 6> occupied_by_piece_type_rotated;
-
     std::array<piece_type, 64> occupier_type_lookup_table;
 
     std::stack<reversible_move> move_log;
@@ -323,29 +254,98 @@ void unmake_move(chess_position& position) {
     position.whos_turn = last_player_to_move;
 }
 
-void compute_valid_moves(const chess_position& state) {
-    bitboard self_occupancy, opponent_occupancy;
+// Knights
 
-//    const piece_color self = state.move_log.size() % 2 == 0 ? piece_color::white : piece_color::black;
-//    switch (self) {
-//        case piece_color::white:
-//            self_occupancy = state.white;
-//            opponent_occupancy = state.black;
-//            break;
-//        case piece_color::black:
-//            self_occupancy = state.black;
-//            opponent_occupancy = state.white;
-//            break;
-//    }
+consteval std::array<bitboard, 64> generate_knight_move_table() {
+    std::array<bitboard, 64> table {};
 
-    // All the pieces which may be legally moved. In general this is the set of all self pieces less
-    // those which are pinned to the king. Moving an absolutely pinned piece is illegal since it violates
-    // the rule which prohibits moving oneself into check.
-    bitboard movable;
+    for (std::uint8_t knight_file = 0; knight_file < 8; ++knight_file) {
+        for (std::uint8_t knight_rank = 0; knight_rank < 8; ++knight_rank) {
+            bitboard moves = 0;
 
-    bitboard valid_destinations = ~self_occupancy;
+            // The following comments refer to knight moves using the format "towards x-y" where
+            // x = the direction which the knight moves two spaces.
+            // y = the direction which the knight moves one space.
+            // x, y are both in [black, kingside, white, queenside], the set of chess board cardinal directions.
+            // Also, recall that the rank approaches the black-side border as it increases.
+            // And the file approaches the kingside of the board as it increases.
+            // The origin is (rank = 0, file = 0) and it refers to the furthest white queenside space.
+
+            // There exists a towards black-queenside knight move.
+            if (knight_file > 0 && knight_rank < 6)
+                moves |= sbitboard(coords_to_sindex(knight_rank + 2, knight_file - 1));
+
+            // There exists a towards black-kingside knight move.
+            if (knight_file < 7 && knight_rank < 6)
+                moves |= sbitboard(coords_to_sindex(knight_rank + 2, knight_file + 1));
+
+            // There exists a towards queenside-black knight move.
+            if (knight_file < 6 && knight_rank < 7)
+                moves |= sbitboard(coords_to_sindex(knight_rank + 1, knight_file + 2));
+
+            // There exists a towards kingside-black knight move.
+            if (knight_file > 1 && knight_rank < 7)
+                moves |= sbitboard(coords_to_sindex(knight_rank + 1, knight_file - 2));
+
+            // There exists a towards white-queenside knight move.
+            if (knight_file > 0 && knight_rank > 1)
+                moves |= sbitboard(coords_to_sindex(knight_rank - 2, knight_file - 1));
+
+            // There exists a towards white-kingside knight move.
+            if (knight_file < 7 && knight_rank > 1)
+                moves |= sbitboard(coords_to_sindex(knight_rank - 2, knight_file + 1));
+
+            // There exists a towards queenside-white knight move.
+            if (knight_file > 1 && knight_rank > 0)
+                moves |= sbitboard(coords_to_sindex(knight_rank - 1, knight_file - 2));
+
+            // There exists a towards kingside-white knight move.
+            if (knight_file < 6 && knight_rank > 0)
+                moves |= sbitboard(coords_to_sindex(knight_rank - 1, knight_file + 2));
+
+            table[coords_to_sindex(knight_rank, knight_file)] = moves;
+        }
+    }
+    return table;
 }
 
+constinit std::array<bitboard, 64> knight_move_table = generate_knight_move_table();
+
+// Rooks
+
+// table[origin][blocker_config] = bitboard (rankwise)
+// table[origin][blocker_config] = bitboard (filewise)
+
+// Where bitboard are all squares on the rank/file the rook can move to.
+// Then we do a bitwise AND ~[self_color_bitbaord], to get the final result.
+// At this point we must do a bitscan, to serialize the bitboard into concrete moves, I assume.
+
+// NOTE: garbage in garbage out
+consteval std::array<std::array<bitlane, 256>, 8> generate_rooklike_move_table() {
+    std::array<std::array<bitlane, 256>, 8> table {};
+
+    for (uint8_t origin = 0; origin < 8; ++origin) {
+        for (bitlane occupancy = 255; occupancy > 0; --occupancy) {
+            bitlane destinations = 0;
+            // Towards Queenside
+            for (uint8_t towards_queenside = 1; towards_queenside <= origin; ++towards_queenside) {
+                const bitlane mark = sbitlane(origin - towards_queenside);
+                const bool is_square_occupied = mark & occupancy;
+                destinations |= mark;
+                if (is_square_occupied) break;
+            }
+            // Towards Kingside
+        }
+    }
+
+    return table;
+}
+
+
+consteval std::array<bitboard, 4096 /* 2^12 */> generate_rook_table() {
+    std::array<bitboard, 4096 /* 2^12 */> table {};
+    return table;
+}
 
 
 
