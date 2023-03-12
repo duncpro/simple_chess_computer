@@ -47,27 +47,41 @@ using bitlane = std::uint8_t;
  * In the context of <b>standard bitboards</b> this returns a bitlane with the <nobr>(<i>n</i> + 1)th</nobr>
  * queenside-most square is marked.
  */
-constexpr bitlane sbitlane(std::uint8_t n) {
-    return ((bitlane) 1) << n;
-}
+[[nodiscard]] constexpr bitlane sbitlane(const std::uint8_t n) { return ((bitlane) 1) << n; }
 
 /**
  * Converts a rank-file coordinate the index of the bit corresponding to that coordinate within a bitboard.  \n\n
  * Ranks are indexed [0, 7] beginning with the white edge of the board. \n\n
  * Files are indexed [0, 7] beginning with the queenside edge of the board.\n\n
- *
- * This function is intended for use during move pre-generation, where it is natural to think in terms of files and
- * ranks, and not necessarily square indices. This function, and rank-file coordinates in general, may not be used at
- * runtime, in an effort reduce unnecessary repetitive computation during game-tree construction.
  */
-consteval uint8_t coords_to_sindex(std::uint8_t rank, std::uint8_t file) { return rank * 8 + file; }
+[[nodiscard]] constexpr uint8_t coords_to_sindex(const std::uint8_t rank, const std::uint8_t file) { return rank * 8 + file; }
+
+/** Converts a standard sindex to a rotated sindex and vice versa.  */
+[[nodiscard]] constexpr std::uint8_t rotate_sindex(std::uint8_t original) {
+    const uint8_t a = original >> 3;
+    const uint8_t b = original & 0b111;
+    return (b * 8) + a;
+}
+
+[[nodiscard]] consteval bitlane rank_literal(bool f0, bool f1, bool f2, bool f3, bool f4, bool f5, bool f6, bool f7) {
+    bitlane rank = 0;
+    if (f0) rank |= sbitlane(0);
+    if (f1) rank |= sbitlane(1);
+    if (f2) rank |= sbitlane(2);
+    if (f3) rank |= sbitlane(3);
+    if (f4) rank |= sbitlane(4);
+    if (f5) rank |= sbitlane(5);
+    if (f6) rank |= sbitlane(6);
+    if (f7) rank |= sbitlane(7);
+    return rank;
+}
 
 /** Creates a singleton bitboard. That is, a bitboard where only a single square is marked. */
-constexpr bitboard sbitboard(std::uint8_t square_index) { return static_cast<bitboard>(1) << square_index; }
+[[nodiscard]] constexpr bitboard sbitboard(const std::uint8_t square_index) { return static_cast<bitboard>(1) << square_index; }
 
 void print_bitboard(const bitboard board) {
     for (std::uint8_t rank = 8; rank > 0; --rank) {
-        const uint8_t rank_begin_sindex = rank * 8;
+        const uint8_t rank_begin_sindex = (rank - 1) * 8;
         const uint8_t rank_end_sindex = rank_begin_sindex + 8;
         for (std::uint8_t sindex = rank_begin_sindex; sindex < rank_end_sindex; ++sindex) {
             std::cout << ((board & sbitboard(sindex)) ? '1' : '0');
@@ -75,6 +89,13 @@ void print_bitboard(const bitboard board) {
         }
         std::cout << std::endl;
     }
+}
+
+void print_rank(const bitlane lane) {
+    for (std::uint8_t file = 0; file < 8; file++) {
+        std::cout << ((sbitlane(file) & lane) ? "1" : "0");
+    }
+    std::cout << "\n";
 }
 
 enum piece_type: uint8_t { rook = 0, knight = 1, bishop = 2, queen = 3, king = 4, pawn = 5, none = 6 };
@@ -165,6 +186,8 @@ uint8_t lookup_target(std::uint8_t origin, std::uint8_t destination, piece_type 
 struct chess_position {
     std::array<bitboard, 2> color_bitboard;
 
+    std::array<bitboard, 2> color_bitboard_rotated;
+
     /**
      * <p>An array of bitboards indexed by <code>piece_type</code>. Each bitboard contains a mapping
      * of all the pieces of the associated type which exist on the board currently.</p>
@@ -193,6 +216,7 @@ void make_move(bitmove move, chess_position& position) {
     const piece_type moved_piece_type = position.occupier_type_lookup_table[origin];
     const piece_type destination_occupant_type = position.occupier_type_lookup_table[destination];
     const piece_color opponent_color = !position.whos_turn;
+    const uint8_t origin_rotated = rotate_sindex(origin);
 
     // The target and destination values are equivalent in all cases except en-passant.
     const uint8_t target = lookup_target(origin, destination, moved_piece_type, destination_occupant_type,
@@ -210,20 +234,20 @@ void make_move(bitmove move, chess_position& position) {
     position.occupier_type_lookup_table[origin] = piece_type::none;
     position.color_bitboard[position.whos_turn] &= ~sbitboard(origin);
     position.type_specific_bitboard[moved_piece_type] &= ~sbitboard(origin);
-    // TODO: Clear from rotated tables.
+    position.color_bitboard_rotated[position.whos_turn] &= ~sbitboard(origin_rotated);
 
     // Clear the target square since the piece which resides on it has been captured.
     const piece_type target_piece_type = position.occupier_type_lookup_table[target];
     position.type_specific_bitboard[target_piece_type] &= ~sbitboard(target);
     position.occupier_type_lookup_table[target] = piece_type::none;
     position.color_bitboard[opponent_color] &= ~sbitboard(target);
-    // TODO: Clear from rotated tables.
+    position.color_bitboard_rotated[opponent_color] &= ~sbitboard(origin_rotated);
 
     // Fill the destination square with the moved piece.
     position.occupier_type_lookup_table[destination] = (is_promotion ? moved_piece_type : promote_to);
     position.color_bitboard[position.whos_turn] |= sbitboard(destination);
     position.type_specific_bitboard[moved_piece_type] |= sbitboard(destination);
-    // TODO: Fill rotated tables
+    position.color_bitboard_rotated[position.whos_turn] |= sbitboard(rotate_sindex(destination));
 
     position.whos_turn = opponent_color;
 }
@@ -234,20 +258,26 @@ void unmake_move(chess_position& position) {
     const piece_color last_player_to_move = !position.whos_turn;
     const piece_type post_move_piece_type = position.occupier_type_lookup_table[last_move.destination];
     const piece_type pre_move_piece_type = last_move.is_promotion ? piece_type::pawn : post_move_piece_type;
+    const uint8_t destination_rotated = rotate_sindex(last_move.destination);
+    const uint8_t target_rotated = rotate_sindex(last_move.target);
+    const uint8_t origin_rotated = rotate_sindex(last_move.origin);
 
     // Remove the piece from its destination square.
     position.occupier_type_lookup_table[last_move.destination] = piece_type::none;
     position.color_bitboard[last_player_to_move] &= ~sbitboard(last_move.destination);
+    position.color_bitboard_rotated[last_player_to_move] &= ~sbitboard(destination_rotated);
     position.type_specific_bitboard[post_move_piece_type] &= ~sbitboard(last_move.destination);
 
     // If a piece was captured as a result of this move, un-capture it.
     position.occupier_type_lookup_table[last_move.target] = last_move.captured_piece_type;
     position.color_bitboard[position.whos_turn] |= (sbitboard(last_move.target) * is_capture);
+    position.color_bitboard_rotated[position.whos_turn] |= (sbitboard(target_rotated) * is_capture);
     position.type_specific_bitboard[last_move.captured_piece_type] |= sbitboard(last_move.target);
 
     // Put the piece back on its origin square.
     position.occupier_type_lookup_table[last_move.origin] = pre_move_piece_type;
     position.color_bitboard[last_player_to_move] |= sbitboard(last_move.origin);
+    position.color_bitboard_rotated[last_player_to_move] |= sbitboard(origin_rotated);
     position.type_specific_bitboard[pre_move_piece_type] |= sbitboard(last_move.origin);
 
     position.move_log.pop();
@@ -313,15 +343,7 @@ constinit std::array<bitboard, 64> knight_move_table = generate_knight_move_tabl
 
 // Rooks
 
-// table[origin][blocker_config] = bitboard (rankwise)
-// table[origin][blocker_config] = bitboard (filewise)
-
-// Where bitboard are all squares on the rank/file the rook can move to.
-// Then we do a bitwise AND ~[self_color_bitbaord], to get the final result.
-// At this point we must do a bitscan, to serialize the bitboard into concrete moves, I assume.
-
-// NOTE: garbage in garbage out
-consteval std::array<std::array<bitlane, 256>, 8> generate_rooklike_move_table() {
+[[nodiscard]] consteval std::array<std::array<bitlane, 256>, 8> generate_rooklike_move_table() {
     std::array<std::array<bitlane, 256>, 8> table {};
 
     for (uint8_t origin = 0; origin < 8; ++origin) {
@@ -334,23 +356,27 @@ consteval std::array<std::array<bitlane, 256>, 8> generate_rooklike_move_table()
                 destinations |= mark;
                 if (is_square_occupied) break;
             }
+
             // Towards Kingside
+            for (uint8_t kingside_square = origin + 1; kingside_square < 8; ++kingside_square) {
+                const bitlane mark = sbitlane(kingside_square);
+                const bool is_square_occupied = mark & occupancy;
+                destinations |= mark;
+                if (is_square_occupied) break;
+            }
+            table[origin][occupancy] = destinations;
         }
     }
 
     return table;
 }
 
+constinit std::array<std::array<bitlane, 256>, 8> rooklike_move_table = generate_rooklike_move_table();
 
-consteval std::array<bitboard, 4096 /* 2^12 */> generate_rook_table() {
-    std::array<bitboard, 4096 /* 2^12 */> table {};
-    return table;
-}
+
 
 
 
 int main() {
-    uint8_t target = lookup_target(31, 22, piece_type::pawn, piece_type::none, piece_color::black);
-    printf("%i", target);
     return 0;
 }
